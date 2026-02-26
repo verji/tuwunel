@@ -96,17 +96,24 @@ fn back_off(&self, event_id: &EventId) {
 
 #[implement(Service)]
 fn is_backed_off(&self, event_id: &EventId, range: Range<Duration>) -> bool {
-	let Some((time, tries)) = self
+	if let Some((time, tries)) = self
 		.bad_event_ratelimiter
 		.read()
 		.expect("locked")
 		.get(event_id)
 		.copied()
-	else {
-		return false;
-	};
+	{
+		if continue_exponential_backoff(range.start, range.end, time.elapsed(), tries) {
+			return true;
+		}
 
-	continue_exponential_backoff(range.start, range.end, time.elapsed(), tries)
+		self.bad_event_ratelimiter
+			.write()
+			.expect("locked")
+			.remove(event_id);
+	}
+
+	false
 }
 
 #[implement(Service)]
