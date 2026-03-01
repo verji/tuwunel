@@ -471,6 +471,64 @@ to every call site would be a massive, invasive change. `task_local!` lets
 HTTP handlers attach context that flows naturally through async call chains,
 with a graceful fallback (`EventOrigin::Internal`) when no context is set.
 
+#### Safety: `HOOK_CTX` is consistent with the event being processed
+
+A natural concern with ambient context is whether the `HOOK_CTX` can get out of
+sync with the event the extension is actually processing -- for example, if a
+single request produced multiple events, or if two requests shared a task-local.
+
+**No cross-request leaking.** `tokio::task_local!` with `.scope()` is
+future-scoped, not thread-scoped. Each axum request handler runs as a separate
+future. Even when two requests interleave on the same tokio worker thread, each
+sees only its own scoped value:
+
+```
+Thread 1:
+  Request A: HOOK_CTX.scope(ctx_a, async { ... })
+    polls build_and_append_pdu -> sees ctx_a
+    yields (.await on I/O)
+  Request B: HOOK_CTX.scope(ctx_b, async { ... })
+    polls build_and_append_pdu -> sees ctx_b
+    yields
+  Request A: resumes -> still sees ctx_a
+```
+
+If code inside the scope calls `tokio::spawn()`, the spawned task does **not**
+inherit `HOOK_CTX`. The hook site falls back to `EventOrigin::Internal` -- a
+loss of metadata, but never a consistency violation.
+
+**1:1 relationship between request and event.** A code trace of the call graph
+from `HOOK_CTX.scope(...)` in `send_message_event_route` confirms that exactly
+one `build_and_append_pdu` executes within the scope:
+
+```
+send_message_event_route
+  HOOK_CTX.scope(ctx, async {
+    build_and_append_pdu              <- creates exactly 1 event
+      create_hash_and_sign_event
+      check_pdu_for_admin_room        <- validation only, no events
+      append_pdu
+        append_pdu_effects
+          redact_pdu                  <- replaces existing event, no new event
+          update_membership           <- cache update only
+          admin.command(...)          <- enqueues to channel, returns immediately
+        appservice.append_pdu         <- queues for delivery, no new event
+      send_pdu_servers                <- queues for federation, no new event
+  })
+```
+
+The one path that eventually calls `build_and_append_pdu` again is
+`admin.command()` -- when a user sends an admin command (e.g. `!admin status`),
+the server posts a response message back to the room. However, this runs on a
+**separate background task** (a channel worker), not within the caller's future.
+That background task does not inherit the `HOOK_CTX` scope, so the admin
+response event correctly gets `EventOrigin::Internal`.
+
+**Conclusion:** Within the `HOOK_CTX.scope(...)` in `send_message_event_route`,
+the context is guaranteed to describe the single event being built. No second
+`build_and_append_pdu` call occurs synchronously within the scope, and no other
+request can observe or mutate the scoped value.
+
 ### Why `OnceLock` instead of a field initialized in the constructor?
 
 The `Services` struct is constructed as an `Arc<Services>`, but extensions need
