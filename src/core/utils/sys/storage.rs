@@ -179,12 +179,12 @@ pub fn name_from_path(path: &Path) -> Result<String> {
 }
 
 /// Get the (major, minor) of the block device on which Path is mounted.
+#[cfg(unix)]
 #[expect(
 	clippy::useless_conversion,
 	clippy::unnecessary_fallible_conversions
 )]
 fn dev_from_path(path: &Path) -> Result<(dev_t, dev_t)> {
-	#[cfg(target_family = "unix")]
 	use std::os::unix::fs::MetadataExt;
 
 	let stat = fs::metadata(path)?;
@@ -193,6 +193,9 @@ fn dev_from_path(path: &Path) -> Result<(dev_t, dev_t)> {
 
 	Ok((major.try_into()?, minor.try_into()?))
 }
+
+#[cfg(not(unix))]
+fn dev_from_path(_path: &Path) -> Result<(dev_t, dev_t)> { Ok((0, 0)) }
 
 fn block_path((major, minor): (dev_t, dev_t)) -> PathBuf {
 	format!("/sys/dev/block/{major}:{minor}/").into()

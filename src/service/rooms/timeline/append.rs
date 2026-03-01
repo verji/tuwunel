@@ -187,6 +187,28 @@ where
 	self.append_pdu_effects(pdu_id, pdu, shortroomid, count, state_lock)
 		.await?;
 
+	// Extension after-hooks
+	if let Some(interceptors) = self.services.interceptors.get() {
+		if !interceptors.is_empty() {
+			use tuwunel_core::extension::{EventOrigin, HookContext, HOOK_CTX};
+
+			let ctx = HOOK_CTX.try_with(Clone::clone).unwrap_or_else(|_| HookContext {
+				sender: pdu.sender().to_owned(),
+				room_id: pdu.room_id().to_owned(),
+				origin: EventOrigin::Internal,
+			});
+
+			for interceptor in interceptors {
+				if let Err(e) = interceptor.after_event(&ctx, pdu).await {
+					tracing::warn!(
+						name = interceptor.name(),
+						"Extension after_event error: {e}"
+					);
+				}
+			}
+		}
+	}
+
 	drop(next_count1);
 	drop(next_count2);
 

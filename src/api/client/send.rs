@@ -1,12 +1,18 @@
 use std::collections::BTreeMap;
 
 use axum::extract::State;
+use axum_client_ip::InsecureClientIp;
 use ruma::{
 	api::client::message::send_message_event,
 	events::{MessageLikeEventType, room::redaction::RoomRedactionEventContent},
 };
 use serde_json::from_str;
-use tuwunel_core::{Err, Result, err, matrix::pdu::PduBuilder, utils, warn};
+use tuwunel_core::{
+	Err, Result, err,
+	extension::{EventOrigin, HookContext, HOOK_CTX},
+	matrix::pdu::PduBuilder,
+	utils, warn,
+};
 
 use crate::Ruma;
 
@@ -21,6 +27,7 @@ use crate::Ruma;
 ///   allowed
 pub(crate) async fn send_message_event_route(
 	State(services): State<crate::State>,
+	InsecureClientIp(client_ip): InsecureClientIp,
 	body: Ruma<send_message_event::v3::Request>,
 ) -> Result<send_message_event::v3::Response> {
 	let sender_user = body.sender_user();
@@ -99,20 +106,34 @@ pub(crate) async fn send_message_event_route(
 	let content = from_str(body.body.body.json().get())
 		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
 
-	let event_id = services
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder {
-				event_type: body.event_type.clone().into(),
-				content,
-				unsigned: Some(unsigned),
-				timestamp: appservice_info.and(body.timestamp),
-				..Default::default()
-			},
-			sender_user,
-			&body.room_id,
-			&state_lock,
-		)
+	let hook_ctx = HookContext {
+		sender: sender_user.to_owned(),
+		room_id: body.room_id.clone(),
+		origin: EventOrigin::Local {
+			device_id: sender_device.map(ToOwned::to_owned),
+			client_ip: Some(client_ip),
+			is_appservice: appservice_info.is_some(),
+		},
+	};
+
+	let event_id = HOOK_CTX
+		.scope(hook_ctx, async {
+			services
+				.timeline
+				.build_and_append_pdu(
+					PduBuilder {
+						event_type: body.event_type.clone().into(),
+						content,
+						unsigned: Some(unsigned),
+						timestamp: appservice_info.and(body.timestamp),
+						..Default::default()
+					},
+					sender_user,
+					&body.room_id,
+					&state_lock,
+				)
+				.await
+		})
 		.await?;
 
 	services.transaction_ids.add_txnid(

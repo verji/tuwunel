@@ -1,9 +1,11 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::{Arc, OnceLock}};
 
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::Mutex;
 use tuwunel_core::{
-	Result, Server, debug, debug_info, implement, info, trace, utils::stream::IterStream,
+	Result, Server, debug, debug_info, implement, info, trace, warn,
+	extension::{EventInterceptor, ExtensionApi, ExtensionEntry},
+	utils::stream::IterStream,
 };
 use tuwunel_database::Database;
 
@@ -63,6 +65,8 @@ pub struct Services {
 	pub oauth: Arc<oauth::Service>,
 	pub retention: Arc<retention::Service>,
 	pub registration_tokens: Arc<registration_tokens::Service>,
+
+	pub(crate) interceptors: OnceLock<Vec<Box<dyn EventInterceptor>>>,
 
 	manager: Mutex<Option<Arc<Manager>>>,
 	pub server: Arc<Server>,
@@ -124,12 +128,41 @@ pub async fn build(server: Arc<Server>) -> Result<Arc<Self>> {
 		retention: retention::Service::build(&args)?,
 		registration_tokens: registration_tokens::Service::build(&args)?,
 
+		interceptors: OnceLock::new(),
+
 		manager: Mutex::new(None),
 		server,
 		db,
 	});
 
-	Ok(services.set(res))
+	let res = services.set(res);
+
+	// Initialize extensions
+	let api: Arc<dyn ExtensionApi> =
+		Arc::new(crate::extension_api::ExtensionApiImpl::new(Arc::clone(&res)));
+	let mut interceptors = Vec::new();
+	for entry in inventory::iter::<ExtensionEntry> {
+		match (entry.create)(
+			&serde_json::Value::Object(Default::default()),
+			Arc::clone(&api),
+		) {
+			| Ok(ext) => {
+				info!("Loaded extension: {}", entry.name);
+				interceptors.push(ext);
+			},
+			| Err(e) => {
+				warn!("Failed to load extension '{}': {e}", entry.name);
+			},
+		}
+	}
+	if !interceptors.is_empty() {
+		info!("Loaded {} extension(s)", interceptors.len());
+	}
+	if res.interceptors.set(interceptors).is_err() {
+		panic!("interceptors already initialized");
+	}
+
+	Ok(res)
 }
 
 #[implement(Services)]

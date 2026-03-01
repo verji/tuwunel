@@ -351,6 +351,7 @@ impl Service {
 		debug!(?key, ?path, "Creating media file");
 
 		let file = fs::File::create(&path).await?;
+		#[cfg(unix)]
 		if self.services.server.config.media_compat_file_link {
 			let legacy = self.get_media_file_b64(key);
 			if let Err(e) = fs::symlink(&path, &legacy).await {

@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "2"
-members = ["src/*"]
+members = ["src/*", "extensions/*", "server"]
 default-members = ["src/*"]
 
 [workspace.package]
@@ -55,6 +55,9 @@ version = "2.3.1"
 
 [workspace.dependencies.async-trait]
 version = "0.1"
+
+[workspace.dependencies.inventory]
+version = "0.3"
 
 [workspace.dependencies.axum]
 version = "0.8"

@@ -1,0 +1,44 @@
+[package]
+name = "tuwunel-custom"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tuwunel-custom"
+path = "src/main.rs"
+
+[features]
+default = [
+	"brotli_compression",
+	"element_hacks",
+	"gzip_compression",
+	"media_thumbnail",
+	"release_max_log_level",
+	"url_preview",
+	"zstd_compression",
+]
+
+brotli_compression = ["tuwunel/brotli_compression"]
+element_hacks = ["tuwunel/element_hacks"]
+gzip_compression = ["tuwunel/gzip_compression"]
+io_uring = ["tuwunel/io_uring"]
+jemalloc = ["tuwunel/jemalloc"]
+jemalloc_conf = ["tuwunel/jemalloc_conf"]
+media_thumbnail = ["tuwunel/media_thumbnail"]
+release_max_log_level = ["tuwunel/release_max_log_level"]
+systemd = ["tuwunel/systemd"]
+url_preview = ["tuwunel/url_preview"]
+zstd_compression = ["tuwunel/zstd_compression"]
+
+[dependencies]
+tuwunel = { path = "../src/main", default-features = false }
+tuwunel-core = { path = "../src/core", package = "tuwunel_core" }
+hello-extension = { path = "../extensions/hello-extension" }
+clap.workspace = true
+log.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+webpki-root-certs.workspace = true
+
+[lints]
+workspace = true

@@ -9,6 +9,8 @@ mod once_services;
 mod service;
 pub mod services;
 
+pub(crate) mod extension_api;
+
 pub mod account_data;
 pub mod admin;
 pub mod appservice;

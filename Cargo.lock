@@ -1761,6 +1761,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hello-extension"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "inventory",
+ "ruma",
+ "serde_json",
+ "tracing",
+ "tuwunel_core",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2152,6 +2164,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009ae045c87e7082cb72dab0ccd01ae075dd00141ddc108f43a0ea150a9e7227"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -5223,6 +5244,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuwunel-custom"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hello-extension",
+ "log",
+ "tokio",
+ "tracing",
+ "tuwunel",
+ "tuwunel_core",
+ "webpki-root-certs",
+]
+
+[[package]]
 name = "tuwunel_admin"
 version = "1.5.0"
 dependencies = [
@@ -5283,6 +5318,7 @@ version = "1.5.0"
 dependencies = [
  "argon2",
  "arrayvec",
+ "async-trait",
  "axum",
  "axum-extra",
  "base64",
@@ -5303,6 +5339,7 @@ dependencies = [
  "http",
  "http-body-util",
  "insta",
+ "inventory",
  "ipaddress",
  "itertools 0.14.0",
  "jevmalloc",
@@ -5416,6 +5453,7 @@ dependencies = [
  "hickory-resolver",
  "http",
  "image",
+ "inventory",
  "ipaddress",
  "ldap3",
  "log",

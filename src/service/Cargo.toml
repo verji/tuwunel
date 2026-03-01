@@ -95,6 +95,7 @@ hickory-resolver.workspace = true
 http.workspace = true
 image.workspace = true
 image.optional = true
+inventory.workspace = true
 ipaddress.workspace = true
 ldap3.workspace = true
 ldap3.optional = true

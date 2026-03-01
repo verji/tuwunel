@@ -4,6 +4,7 @@ pub mod alloc;
 pub mod config;
 pub mod debug;
 pub mod error;
+pub mod extension;
 pub mod info;
 pub mod log;
 pub mod matrix;

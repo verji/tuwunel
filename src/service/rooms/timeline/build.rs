@@ -31,11 +31,36 @@ use super::RoomMutexGuard;
 )]
 pub async fn build_and_append_pdu(
 	&self,
-	pdu_builder: PduBuilder,
+	mut pdu_builder: PduBuilder,
 	sender: &UserId,
 	room_id: &RoomId,
 	state_lock: &RoomMutexGuard,
 ) -> Result<OwnedEventId> {
+	// Extension before-hooks
+	if let Some(interceptors) = self.services.interceptors.get() {
+		if !interceptors.is_empty() {
+			use tuwunel_core::extension::{EventDecision, EventOrigin, HookContext, HOOK_CTX};
+
+			let ctx = HOOK_CTX.try_with(Clone::clone).unwrap_or_else(|_| HookContext {
+				sender: sender.to_owned(),
+				room_id: room_id.to_owned(),
+				origin: EventOrigin::Internal,
+			});
+
+			for interceptor in interceptors {
+				match interceptor
+					.before_local_event(&ctx, &mut pdu_builder)
+					.await?
+				{
+					| EventDecision::Allow => {},
+					| EventDecision::Block(reason) => {
+						return Err!(Request(Forbidden("{reason}")));
+					},
+				}
+			}
+		}
+	}
+
 	let (pdu, pdu_json) = self
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
