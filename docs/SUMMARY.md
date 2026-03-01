@@ -18,6 +18,7 @@
 - [TURN](turn.md)
 - [Matrix RTC (Element Call)](matrix_rtc.md)
 - [Appservices](appservices.md)
+- [Extensions](extensions.md)
 - [Maintenance](maintenance.md)
 - [Troubleshooting](troubleshooting.md)
 - [Development](development.md)
