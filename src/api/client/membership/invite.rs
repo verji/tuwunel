@@ -2,7 +2,10 @@ use axum::extract::State;
 use axum_client_ip::InsecureClientIp;
 use futures::{FutureExt, join};
 use ruma::{api::client::membership::invite_user, events::room::member::MembershipState};
-use tuwunel_core::{Err, Result};
+use tuwunel_core::{
+	Err, Result,
+	extension::{EventOrigin, HookContext, HOOK_CTX},
+};
 
 use super::banned_room_check;
 use crate::{Ruma, client::utils::invite_check};
@@ -60,10 +63,24 @@ pub(crate) async fn invite_user_route(
 		return Ok(invite_user::v3::Response {});
 	}
 
-	services
-		.membership
-		.invite(sender_user, user_id, room_id, body.reason.as_ref(), false)
-		.boxed()
+	let hook_ctx = HookContext {
+		sender: sender_user.to_owned(),
+		room_id: room_id.to_owned(),
+		origin: EventOrigin::Local {
+			device_id: body.sender_device.as_deref().map(ToOwned::to_owned),
+			client_ip: Some(client),
+			is_appservice: body.appservice_info.is_some(),
+		},
+	};
+
+	HOOK_CTX
+		.scope(hook_ctx, async {
+			services
+				.membership
+				.invite(sender_user, user_id, room_id, body.reason.as_ref(), false)
+				.boxed()
+				.await
+		})
 		.await?;
 
 	Ok(invite_user::v3::Response {})

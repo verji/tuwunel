@@ -1,7 +1,10 @@
 use axum::extract::State;
 use axum_client_ip::InsecureClientIp;
 use ruma::api::client::knock::knock_room;
-use tuwunel_core::Result;
+use tuwunel_core::{
+	Result,
+	extension::{EventOrigin, HookContext, HOOK_CTX},
+};
 
 use super::banned_room_check;
 use crate::Ruma;
@@ -27,16 +30,30 @@ pub(crate) async fn knock_room_route(
 
 	let state_lock = services.state.mutex.lock(&room_id).await;
 
-	services
-		.membership
-		.knock(
-			sender_user,
-			&room_id,
-			Some(&body.room_id_or_alias),
-			body.reason.clone(),
-			&servers,
-			&state_lock,
-		)
+	let hook_ctx = HookContext {
+		sender: sender_user.to_owned(),
+		room_id: room_id.clone(),
+		origin: EventOrigin::Local {
+			device_id: body.sender_device.as_deref().map(ToOwned::to_owned),
+			client_ip: Some(client),
+			is_appservice: body.appservice_info.is_some(),
+		},
+	};
+
+	HOOK_CTX
+		.scope(hook_ctx, async {
+			services
+				.membership
+				.knock(
+					sender_user,
+					&room_id,
+					Some(&body.room_id_or_alias),
+					body.reason.clone(),
+					&servers,
+					&state_lock,
+				)
+				.await
+		})
 		.await?;
 
 	drop(state_lock);

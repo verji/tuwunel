@@ -5,7 +5,11 @@ use ruma::{
 	RoomId,
 	api::client::membership::{join_room_by_id, join_room_by_id_or_alias},
 };
-use tuwunel_core::{Result, warn};
+use tuwunel_core::{
+	Result,
+	extension::{EventOrigin, HookContext, HOOK_CTX},
+	warn,
+};
 
 use super::banned_room_check;
 use crate::Ruma;
@@ -32,30 +36,46 @@ pub(crate) async fn join_room_by_id_route(
 
 	let state_lock = services.state.mutex.lock(room_id).await;
 
-	let mut errors = 0_usize;
-	while let Err(e) = services
-		.membership
-		.join(
-			sender_user,
-			room_id,
-			None,
-			body.reason.clone(),
-			&[],
-			body.appservice_info.is_some(),
-			&state_lock,
-		)
-		.boxed()
-		.await
-	{
-		errors = errors.saturating_add(1);
-		if errors >= services.config.max_join_attempts_per_join_request {
-			warn!(
-				"Several servers failed. Giving up for this request. Try again for different \
-				 server selection."
-			);
-			return Err(e);
-		}
-	}
+	let hook_ctx = HookContext {
+		sender: sender_user.to_owned(),
+		room_id: room_id.to_owned(),
+		origin: EventOrigin::Local {
+			device_id: body.sender_device.as_deref().map(ToOwned::to_owned),
+			client_ip: Some(client),
+			is_appservice: body.appservice_info.is_some(),
+		},
+	};
+
+	HOOK_CTX
+		.scope(hook_ctx, async {
+			let mut errors = 0_usize;
+			while let Err(e) = services
+				.membership
+				.join(
+					sender_user,
+					room_id,
+					None,
+					body.reason.clone(),
+					&[],
+					body.appservice_info.is_some(),
+					&state_lock,
+				)
+				.boxed()
+				.await
+			{
+				errors = errors.saturating_add(1);
+				if errors >= services.config.max_join_attempts_per_join_request {
+					warn!(
+						"Several servers failed. Giving up for this request. Try again for \
+						 different server selection."
+					);
+					return Err(e);
+				}
+			}
+
+			Ok::<(), tuwunel_core::Error>(())
+		})
+		.await?;
 
 	drop(state_lock);
 
@@ -90,30 +110,46 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 
 	let state_lock = services.state.mutex.lock(&room_id).await;
 
-	let mut errors = 0_usize;
-	while let Err(e) = services
-		.membership
-		.join(
-			sender_user,
-			&room_id,
-			Some(&body.room_id_or_alias),
-			body.reason.clone(),
-			&servers,
-			appservice_info.is_some(),
-			&state_lock,
-		)
-		.boxed()
-		.await
-	{
-		errors = errors.saturating_add(1);
-		if errors >= services.config.max_join_attempts_per_join_request {
-			warn!(
-				"Several servers failed. Giving up for this request. Try again for different \
-				 server selection."
-			);
-			return Err(e);
-		}
-	}
+	let hook_ctx = HookContext {
+		sender: sender_user.to_owned(),
+		room_id: room_id.clone(),
+		origin: EventOrigin::Local {
+			device_id: body.sender_device.as_deref().map(ToOwned::to_owned),
+			client_ip: Some(client),
+			is_appservice: appservice_info.is_some(),
+		},
+	};
+
+	HOOK_CTX
+		.scope(hook_ctx, async {
+			let mut errors = 0_usize;
+			while let Err(e) = services
+				.membership
+				.join(
+					sender_user,
+					&room_id,
+					Some(&body.room_id_or_alias),
+					body.reason.clone(),
+					&servers,
+					appservice_info.is_some(),
+					&state_lock,
+				)
+				.boxed()
+				.await
+			{
+				errors = errors.saturating_add(1);
+				if errors >= services.config.max_join_attempts_per_join_request {
+					warn!(
+						"Several servers failed. Giving up for this request. Try again for \
+						 different server selection."
+					);
+					return Err(e);
+				}
+			}
+
+			Ok::<(), tuwunel_core::Error>(())
+		})
+		.await?;
 
 	drop(state_lock);
 

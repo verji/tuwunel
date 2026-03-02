@@ -545,11 +545,44 @@ would create an inconsistent state (event in the database but an error returned
 to the client). Errors in after-hooks are logged and ignored to maintain
 consistency.
 
+## Multi-Event Endpoints
+
+Some client API endpoints create multiple events from a single HTTP request.
+Extensions should be aware of this when implementing hooks.
+
+### Room creation (`create_room_route`)
+
+A single room-creation request produces 8+ events in sequence: `m.room.create`,
+`m.room.member` (join), `m.room.power_levels`, `m.room.canonical_alias`,
+`m.room.join_rules`, `m.room.history_visibility`, `m.room.guest_access`,
+plus optional initial state events, encryption, `m.room.name`, `m.room.topic`,
+and invite events. All of these share the same `HOOK_CTX` (same sender, same
+client IP, same room).
+
+### Room upgrade (`upgrade_room_route`)
+
+A room upgrade creates a new room (create event, join, transferred state events)
+and sends a tombstone + power-level lockdown to the old room. The `HOOK_CTX`
+uses the **new** room ID. Extensions should check the PDU's actual `room_id`
+field if they need to distinguish old-room vs new-room events.
+
+### Recommendations for extension authors
+
+- **Filter by `event_type`** in `before_local_event` to only act on events you
+  care about. Don't blindly block all events during room creation.
+- **Avoid blocking during room creation or upgrade** unless you specifically
+  intend to. Returning `EventDecision::Reject` for any sub-event leaves the
+  room in a partial state (e.g. created but missing power levels).
+- **The `m.room.create` event itself** (for V2 room IDs) is created with a
+  placeholder room ID before the real ID is derived. This event does not have
+  `HOOK_CTX` set and uses the `Internal` fallback origin.
+
 ## Current Limitations
 
-- **Only `send_message_event_route` sets `HOOK_CTX`** -- Other endpoints
-  (state events, redactions, federation) use the `Internal` fallback. Adding
-  `HOOK_CTX` to more endpoints is straightforward.
+- **Federation endpoints do not set `HOOK_CTX`** -- Federated events use the
+  `Internal` fallback origin. Adding `HOOK_CTX` to federation endpoints is
+  possible but requires different context (no client IP, different sender
+  semantics).
 - **No per-extension configuration** -- The `config` parameter passed to
   `create` is currently an empty JSON object. A future iteration could load
   per-extension config from the server's TOML file.
@@ -571,6 +604,11 @@ consistency.
 | `src/service/services.rs` | `OnceLock<Vec<...>>` field and initialization loop |
 | `src/service/rooms/timeline/build.rs` | Before-hook call site |
 | `src/service/rooms/timeline/append.rs` | After-hook call site |
-| `src/api/client/send.rs` | `HOOK_CTX` population from HTTP request |
+| `src/api/client/send.rs` | `HOOK_CTX` for send message events |
+| `src/api/client/redact.rs` | `HOOK_CTX` for redaction events |
+| `src/api/client/state.rs` | `HOOK_CTX` for state events |
+| `src/api/client/room/create.rs` | `HOOK_CTX` for room creation (multi-event) |
+| `src/api/client/room/upgrade.rs` | `HOOK_CTX` for room upgrades (multi-event) |
+| `src/api/client/membership/*.rs` | `HOOK_CTX` for join, invite, ban, kick, leave, unban, knock |
 | `extensions/hello-extension/` | Sample extension |
 | `server/` | Custom server binary that links extensions |

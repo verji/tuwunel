@@ -1,7 +1,10 @@
+use std::net::IpAddr;
+
 use axum::extract::State;
+use axum_client_ip::InsecureClientIp;
 use futures::{FutureExt, TryFutureExt, TryStreamExt};
 use ruma::{
-	OwnedEventId, OwnedRoomAliasId, RoomId, UserId,
+	OwnedDeviceId, OwnedEventId, OwnedRoomAliasId, RoomId, UserId,
 	api::client::state::{get_state_event_for_key, get_state_events, send_state_event},
 	events::{
 		AnyStateEventContent, StateEventType,
@@ -18,6 +21,7 @@ use ruma::{
 use serde_json::json;
 use tuwunel_core::{
 	Err, Result, err, is_false,
+	extension::{EventOrigin, HookContext, HOOK_CTX},
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };
@@ -30,6 +34,7 @@ use crate::{Ruma, RumaResponse};
 /// Sends a state event into the room.
 pub(crate) async fn send_state_event_for_key_route(
 	State(services): State<crate::State>,
+	InsecureClientIp(client_ip): InsecureClientIp,
 	body: Ruma<send_state_event::v3::Request>,
 ) -> Result<send_state_event::v3::Response> {
 	let sender_user = body.sender_user();
@@ -47,6 +52,9 @@ pub(crate) async fn send_state_event_for_key_route(
 			} else {
 				None
 			},
+			body.sender_device.as_deref().map(ToOwned::to_owned),
+			client_ip,
+			body.appservice_info.is_some(),
 		)
 		.await?,
 	})
@@ -57,9 +65,10 @@ pub(crate) async fn send_state_event_for_key_route(
 /// Sends a state event into the room.
 pub(crate) async fn send_state_event_for_empty_key_route(
 	State(services): State<crate::State>,
+	client_ip: InsecureClientIp,
 	body: Ruma<send_state_event::v3::Request>,
 ) -> Result<RumaResponse<send_state_event::v3::Response>> {
-	send_state_event_for_key_route(State(services), body)
+	send_state_event_for_key_route(State(services), client_ip, body)
 		.boxed()
 		.await
 		.map(RumaResponse)
@@ -178,24 +187,42 @@ async fn send_state_event_for_key_helper(
 	json: &Raw<AnyStateEventContent>,
 	state_key: &str,
 	timestamp: Option<ruma::MilliSecondsSinceUnixEpoch>,
+	device_id: Option<OwnedDeviceId>,
+	client_ip: IpAddr,
+	is_appservice: bool,
 ) -> Result<OwnedEventId> {
 	allowed_to_send_state_event(services, room_id, event_type, state_key, json).await?;
 	let state_lock = services.state.mutex.lock(room_id).await;
-	let event_id = services
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder {
-				event_type: event_type.to_string().into(),
-				content: serde_json::from_str(json.json().get())?,
-				state_key: Some(state_key.into()),
-				timestamp,
-				..Default::default()
-			},
-			sender,
-			room_id,
-			&state_lock,
-		)
-		.boxed()
+
+	let hook_ctx = HookContext {
+		sender: sender.to_owned(),
+		room_id: room_id.to_owned(),
+		origin: EventOrigin::Local {
+			device_id,
+			client_ip: Some(client_ip),
+			is_appservice,
+		},
+	};
+
+	let event_id = HOOK_CTX
+		.scope(hook_ctx, async {
+			services
+				.timeline
+				.build_and_append_pdu(
+					PduBuilder {
+						event_type: event_type.to_string().into(),
+						content: serde_json::from_str(json.json().get())?,
+						state_key: Some(state_key.into()),
+						timestamp,
+						..Default::default()
+					},
+					sender,
+					room_id,
+					&state_lock,
+				)
+				.boxed()
+				.await
+		})
 		.await?;
 
 	Ok(event_id)

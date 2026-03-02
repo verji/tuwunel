@@ -1,6 +1,7 @@
 use std::cmp::max;
 
 use axum::extract::State;
+use axum_client_ip::InsecureClientIp;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use ruma::{
 	CanonicalJsonObject, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomVersionId, UserId,
@@ -23,6 +24,7 @@ use serde_json::{
 };
 use tuwunel_core::{
 	Err, Result, debug_info, err, error, implement, info, is_equal_to, is_less_than,
+	extension::{EventOrigin, HookContext, HOOK_CTX},
 	matrix::{Event, StateKey, pdu::PduBuilder, room_version},
 	utils::{
 		future::TryExtExt,
@@ -71,6 +73,7 @@ struct RoomUpgradeContext<'a> {
 #[tracing::instrument(level = "debug")]
 pub(crate) async fn upgrade_room_route(
 	State(services): State<crate::State>,
+	InsecureClientIp(client_ip): InsecureClientIp,
 	body: Ruma<v3::Request>,
 ) -> Result<v3::Response> {
 	let sender_user = body.sender_user();
@@ -157,7 +160,20 @@ pub(crate) async fn upgrade_room_route(
 		additional_creators: &body.additional_creators,
 	};
 
-	if let Err(e) = context.transfer_room().await {
+	let hook_ctx = HookContext {
+		sender: sender_user.to_owned(),
+		room_id: replacement_room.clone(),
+		origin: EventOrigin::Local {
+			device_id: body.sender_device.as_deref().map(ToOwned::to_owned),
+			client_ip: Some(client_ip),
+			is_appservice: body.appservice_info.is_some(),
+		},
+	};
+
+	if let Err(e) = HOOK_CTX
+		.scope(hook_ctx, async { context.transfer_room().await })
+		.await
+	{
 		error!(?e, ?context, "Room upgrade failed. Cleaning up incomplete room...");
 
 		if let Err(e) = services
