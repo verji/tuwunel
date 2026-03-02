@@ -497,12 +497,26 @@ If code inside the scope calls `tokio::spawn()`, the spawned task does **not**
 inherit `HOOK_CTX`. The hook site falls back to `EventOrigin::Internal` -- a
 loss of metadata, but never a consistency violation.
 
-**1:1 relationship between request and event.** A code trace of the call graph
-from `HOOK_CTX.scope(...)` in `send_message_event_route` confirms that exactly
-one `build_and_append_pdu` executes within the scope:
+**Relationship between request and events.** Each client API endpoint that sets
+`HOOK_CTX` has been traced to verify how many events are produced within the
+scope, and whether the context remains consistent.
+
+#### Simple 1:1 endpoints
+
+These endpoints produce exactly **one** `build_and_append_pdu` call within
+`HOOK_CTX.scope(...)`:
+
+- `send_message_event_route` -- 1 message event
+- `redact_event_route` -- 1 redaction event
+- `send_state_event_for_key_route` -- 1 state event (via helper)
+- `ban_user_route` → `membership.ban()` -- 1 membership event
+- `kick_user_route` → `membership.kick()` -- 1 membership event
+- `unban_user_route` → `membership.unban()` -- 1 membership event
+
+Call graph for these (all identical in structure):
 
 ```
-send_message_event_route
+*_route
   HOOK_CTX.scope(ctx, async {
     build_and_append_pdu              <- creates exactly 1 event
       create_hash_and_sign_event
@@ -524,10 +538,79 @@ the server posts a response message back to the room. However, this runs on a
 That background task does not inherit the `HOOK_CTX` scope, so the admin
 response event correctly gets `EventOrigin::Internal`.
 
-**Conclusion:** Within the `HOOK_CTX.scope(...)` in `send_message_event_route`,
-the context is guaranteed to describe the single event being built. No second
-`build_and_append_pdu` call occurs synchronously within the scope, and no other
-request can observe or mutate the scoped value.
+#### Conditional-path endpoints
+
+**`leave_room_route`** → `membership.leave()` has three mutually exclusive paths:
+
+1. Banned/disabled room → `update_membership` only (cache update, no PDU
+   created). `HOOK_CTX` is set but unused -- no hooks fire.
+2. Remote leave (server not in room) → `remote_leave()` + `update_membership`.
+   No `build_and_append_pdu`, no hooks fire.
+3. Local leave → **1** `build_and_append_pdu` -- correct 1:1.
+
+#### Dual local/remote endpoints
+
+**`join_room_by_id_route` / `join_room_by_id_or_alias_route`** →
+`membership.join()` dispatches to `join_local` or `join_remote` (mutually
+exclusive based on whether the server is in the room):
+
+- `join_local` primary path → **1** `build_and_append_pdu` -- 1:1.
+- `join_local` fallback (restricted join fails locally, retries via federation)
+  → the failed `build_and_append_pdu` creates **no event**, then
+  `handle_incoming_pdu` → `append_incoming_pdu` → `append_pdu` creates **1
+  event**. After-hooks fire with `HOOK_CTX`. Before-hooks do not fire (event
+  was built remotely, not via `build_and_append_pdu` -- correct).
+- `join_remote` → `append_pdu` directly -- **1 event**. After-hooks fire with
+  `HOOK_CTX`. Before-hooks do not fire (federation-built event).
+- The API handler wraps the **entire retry loop** in `HOOK_CTX.scope`. Failed
+  join attempts produce no events. Only the successful attempt produces an
+  event.
+
+**`invite_user_route`** → `membership.invite()` dispatches to `local_invite`
+or `remote_invite`:
+
+- `local_invite` → **1** `build_and_append_pdu` -- 1:1.
+- `remote_invite` → `create_hash_and_sign_event` (builds PDU but does not
+  persist) → sends to federation → `handle_incoming_pdu` → `append_incoming_pdu`
+  → `append_pdu` -- **1 event**. After-hooks fire with `HOOK_CTX`. Before-hooks
+  do not fire.
+
+**`knock_room_route`** → `membership.knock()` dispatches to
+`knock_room_helper_local` or `knock_room_helper_remote`:
+
+- `knock_room_helper_local` primary → **1** `build_and_append_pdu` -- 1:1.
+- `knock_room_helper_local` fallback (local fails, tries federation) → failed
+  `build_and_append_pdu` creates **no event**, then `append_pdu` -- **1 event**.
+  After-hooks fire with `HOOK_CTX`.
+- `knock_room_helper_remote` → `append_pdu` -- **1 event**. After-hooks fire
+  with `HOOK_CTX`.
+
+**Note on federation-assisted paths:** When an event is built by a remote server
+(join_remote, remote_invite, knock_remote, and their local-with-federation-
+fallback variants), the event bypasses `build_and_append_pdu` and enters through
+`append_pdu` directly. This means **before-hooks do not fire** (the event was
+not built locally), but **after-hooks do fire** with the `HOOK_CTX` set by the
+API handler. This is correct behavior: extensions cannot block an event that was
+already accepted by federation, but they can observe it.
+
+#### Multi-event endpoints (N:1)
+
+See the "Multi-Event Endpoints" section below for `create_room_route` and
+`upgrade_room_route`, which produce multiple events within a single
+`HOOK_CTX.scope`.
+
+#### No background task leaking
+
+Confirmed: **zero** `tokio::spawn()` calls exist in all membership service
+functions. All code paths execute synchronously within the caller's async
+context, so `HOOK_CTX` cannot leak to unrelated events.
+
+**Conclusion:** For 1:1 endpoints, the `HOOK_CTX` is guaranteed to describe the
+single event being built. For dual-path endpoints, exactly one event is produced
+per path (with correct before/after hook behavior depending on whether the event
+was built locally or received via federation). For multi-event endpoints, all
+events share the same `HOOK_CTX` (same request, same sender, same IP). No
+cross-request leaking is possible.
 
 ### Why `OnceLock` instead of a field initialized in the constructor?
 
