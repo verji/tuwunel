@@ -349,58 +349,114 @@ Standard Matrix error codes: `M_FORBIDDEN`, `M_NOT_FOUND`, `M_UNKNOWN`,
 
 ## 5. Architecture
 
-### 5.1 Module Layout
+### 5.1 Design Decision: Separate Workspace Crate
+
+The admin API is implemented as a **separate workspace crate** (`tuwunel_synapse_admin`)
+rather than a module inside `tuwunel_api`. This maximizes isolation from upstream tuwunel
+and minimizes merge conflicts when rebasing on upstream updates.
+
+**Rationale:** Upstream tuwunel is unlikely to accept Synapse admin API compatibility
+as a core feature. By keeping the implementation in its own crate, we ensure:
+
+- **Merge-friendly fork:** Only ~5 lines across 3 upstream files are modified. The entire
+  admin API lives in a directory upstream doesn't have, so it can never conflict.
+- **Feature-gated:** A Cargo feature (`synapse_admin`) controls compilation. When disabled,
+  zero admin API code is compiled.
+- **Runtime-toggled:** A config flag (`allow_synapse_admin_api`) controls whether routes
+  are registered, even when compiled in.
+- **Clean separation:** The crate has its own `Cargo.toml`, dependencies, and test suite.
+
+### 5.2 Crate Layout
 
 ```
-src/api/
-├── client/          # Existing client-server API
-├── server/          # Existing federation API
-├── admin/           # NEW — Synapse admin API compat
-│   ├── mod.rs       # Module exports
-│   ├── user/
-│   │   ├── mod.rs
-│   │   ├── get.rs         # GET /v2/users/{userId}
-│   │   ├── put.rs         # PUT /v2/users/{userId}
-│   │   ├── list.rs        # GET /v2/users
-│   │   └── devices.rs     # GET /v2/users/{userId}/devices
-│   └── room/
-│       ├── mod.rs
-│       ├── list.rs        # GET /v1/rooms
-│       ├── details.rs     # GET /v1/rooms/{roomId}
-│       ├── members.rs     # GET /v1/rooms/{roomId}/members
-│       ├── state.rs       # GET /v1/rooms/{roomId}/state
-│       └── delete.rs      # DELETE /v2/rooms/{roomId}
-└── router.rs        # Add admin routes here
+src/synapse_admin/               # NEW crate — auto-joins workspace via members = ["src/*"]
+├── Cargo.toml                   # depends on tuwunel_core, tuwunel_service
+├── mod.rs                       # pub fn routes(Router) -> Router
+├── auth.rs                      # AdminUser axum extractor
+├── error.rs                     # Synapse-compatible error responses
+├── user/
+│   ├── mod.rs
+│   ├── get.rs                   # GET /v2/users/{userId}
+│   ├── put.rs                   # PUT /v2/users/{userId}
+│   ├── list.rs                  # GET /v2/users
+│   └── devices.rs               # GET /v2/users/{userId}/devices
+└── room/
+    ├── mod.rs
+    ├── list.rs                  # GET /v1/rooms
+    ├── details.rs               # GET /v1/rooms/{roomId}
+    ├── members.rs               # GET /v1/rooms/{roomId}/members
+    ├── state.rs                 # GET /v1/rooms/{roomId}/state
+    └── delete.rs                # DELETE /v2/rooms/{roomId}
 ```
 
-### 5.2 Route Registration
+### 5.3 Upstream Touchpoints (minimized)
 
-Tuwunel uses Ruma's type-driven routing (`ruma_route`). Since the Synapse admin API is
-not part of the Matrix spec and has no Ruma types, we have two options:
+Only 3 upstream files are modified, totaling ~5 lines of diff:
 
-**Option A — Custom axum routes (recommended):**
-Register plain axum handlers directly on the router, bypassing Ruma's type system.
-Use serde structs for request/response serialization. Reuse the existing auth pipeline
-by extracting the Bearer token and calling auth functions directly.
+**1. `src/main/Cargo.toml`** — optional dependency + feature
+```toml
+[features]
+synapse_admin = ["dep:tuwunel-synapse-admin"]
+
+[dependencies]
+tuwunel-synapse-admin = { path = "../synapse_admin", optional = true }
+```
+
+**2. Root `Cargo.toml`** — feature propagation
+```toml
+[features]
+synapse_admin = ["tuwunel/synapse_admin"]
+```
+
+**3. `src/main/server.rs`** (or equivalent startup path) — conditional route mount
+```rust
+#[cfg(feature = "synapse_admin")]
+if services.server.config.allow_synapse_admin_api {
+    router = tuwunel_synapse_admin::routes(router, &services);
+}
+```
+
+The config field `allow_synapse_admin_api` is read by our crate from the same TOML file
+via a separate Figment extract, avoiding changes to `src/core/config/mod.rs`.
+
+### 5.4 Rebase Model
+
+```
+upstream main:  A ── B ── C ── D ── E       (upstream evolves)
+                 \
+our fork:         X ── Y                     (our commits)
+```
+
+- **Commit X** = "Add `tuwunel_synapse_admin` crate" — entirely new directory, never conflicts
+- **Commit Y** = "Wire admin API into main" — ~5 lines in 3 files, minimal conflict surface
+
+On every rebase, only commit Y can conflict, and only if upstream modifies the exact
+lines we touch in those 3 files.
+
+### 5.5 Route Registration
+
+The Synapse admin API is not part of the Matrix spec and has no Ruma types. The crate
+uses plain **axum routes** with serde structs for request/response serialization:
 
 ```rust
-// In router.rs
-router
-    .route("/_synapse/admin/v2/users/:user_id", get(admin::user::get_account))
-    .route("/_synapse/admin/v2/users/:user_id", put(admin::user::put_account))
-    .route("/_synapse/admin/v2/users", get(admin::user::list_accounts))
-    // ...
+// src/synapse_admin/mod.rs
+pub fn routes(router: Router<State>, services: &Services) -> Router<State> {
+    router
+        .route("/_synapse/admin/v2/users/:user_id", get(user::get_account))
+        .route("/_synapse/admin/v2/users/:user_id", put(user::put_account))
+        .route("/_synapse/admin/v2/users", get(user::list_accounts))
+        .route("/_synapse/admin/v2/users/:user_id/devices", get(user::get_devices))
+        .route("/_synapse/admin/v1/rooms", get(room::list_rooms))
+        .route("/_synapse/admin/v1/rooms/:room_id", get(room::get_details))
+        .route("/_synapse/admin/v1/rooms/:room_id/members", get(room::get_members))
+        .route("/_synapse/admin/v1/rooms/:room_id/state", get(room::get_state))
+        .route("/_synapse/admin/v2/rooms/:room_id", delete(room::delete_room))
+}
 ```
 
-**Option B — Custom Ruma types:**
-Define custom `IncomingRequest`/`OutgoingResponse` types that implement Ruma's traits.
-More boilerplate but integrates with the existing `ruma_route` macro.
+### 5.6 Admin Auth Guard
 
-Option A is simpler and sufficient since these endpoints are Synapse-specific.
-
-### 5.3 Admin Auth Guard
-
-Create a reusable extractor or guard:
+A reusable axum `FromRequestParts` extractor within the crate:
 
 ```rust
 /// Extracts the authenticated admin user from the request.
@@ -411,11 +467,30 @@ pub(crate) struct AdminUser {
 }
 ```
 
-This can be implemented as an axum `FromRequestParts` extractor that:
+Implementation:
 1. Reads `Authorization: Bearer ...` header
-2. Looks up the token → `(user_id, device_id)`
+2. Looks up the token via `services.users` → `(user_id, device_id)`
 3. Checks `services.admin.user_is_admin(&user_id)`
 4. Returns `AdminUser` or rejects with 401/403
+
+### 5.7 Config
+
+The crate reads its own config section from the same tuwunel TOML file using a
+separate Figment extract, keeping `src/core/config/mod.rs` untouched:
+
+```toml
+# tuwunel.toml
+allow_synapse_admin_api = true   # default: false
+```
+
+```rust
+// src/synapse_admin/config.rs
+#[derive(Deserialize)]
+pub struct SynapseAdminConfig {
+    #[serde(default)]
+    pub allow_synapse_admin_api: bool,
+}
+```
 
 ---
 
@@ -425,28 +500,30 @@ This can be implemented as an axum `FromRequestParts` extractor that:
 
 **Unblocks:** linkonboarding, verji-itops, itops-matrix
 
-1. Set up `src/api/admin/` module structure
-2. Implement `AdminUser` auth extractor
-3. Implement GET `/_synapse/admin/v2/users/{userId}` (GetAccount)
-4. Implement GET `/_synapse/admin/v2/users` (ListAccounts)
-5. Implement PUT `/_synapse/admin/v2/users/{userId}` (PutAccount)
-6. Implement GET `/_synapse/admin/v2/users/{userId}/devices` (GetUserDevices)
-7. Register routes in `router.rs`
+1. Create `src/synapse_admin/` crate with `Cargo.toml`
+2. Add `synapse_admin` feature flag to root + main crate
+3. Implement `AdminUser` auth extractor
+4. Implement config extraction (`allow_synapse_admin_api`)
+5. Implement GET `/_synapse/admin/v2/users/{userId}` (GetAccount)
+6. Implement GET `/_synapse/admin/v2/users` (ListAccounts)
+7. Implement PUT `/_synapse/admin/v2/users/{userId}` (PutAccount)
+8. Implement GET `/_synapse/admin/v2/users/{userId}/devices` (GetUserDevices)
+9. Wire routes into `src/main/server.rs` behind feature + config guard
 
 ### Phase 2 — Room Read Endpoints
 
 **Unblocks:** hierarchy analysis in verji-itops
 
-8. Implement GET `/_synapse/admin/v1/rooms` (ListRooms)
-9. Implement GET `/_synapse/admin/v1/rooms/{roomId}` (GetRoomDetails)
-10. Implement GET `/_synapse/admin/v1/rooms/{roomId}/members` (GetRoomMembers)
-11. Implement GET `/_synapse/admin/v1/rooms/{roomId}/state` (GetRoomState)
+10. Implement GET `/_synapse/admin/v1/rooms` (ListRooms)
+11. Implement GET `/_synapse/admin/v1/rooms/{roomId}` (GetRoomDetails)
+12. Implement GET `/_synapse/admin/v1/rooms/{roomId}/members` (GetRoomMembers)
+13. Implement GET `/_synapse/admin/v1/rooms/{roomId}/state` (GetRoomState)
 
 ### Phase 3 — Room Mutation
 
 **Low priority — sole Verji caller is deprecated**
 
-12. Implement DELETE `/_synapse/admin/v2/rooms/{roomId}` (DeleteRoom)
+14. Implement DELETE `/_synapse/admin/v2/rooms/{roomId}` (DeleteRoom)
 
 ---
 
@@ -484,6 +561,8 @@ side-by-side with a Synapse instance.
 | ListAccounts pagination at scale | Slow for large user counts | Start with collect-and-slice; add DB-level pagination if needed |
 | Room state serialization differs from Synapse | Callers fail to parse events | Use tuwunel's existing Pdu→JSON serialization which follows Matrix spec |
 | Admin auth model differs (Synapse uses DB flag, tuwunel uses room membership) | Edge cases in admin detection | Functionally equivalent — both are checked via `user_is_admin()` |
+| Upstream tuwunel refactors service APIs our crate depends on | Build breaks on rebase | Pin to specific service trait signatures; keep handler logic thin (delegate to services, don't duplicate logic) |
+| Separate crate can't access `pub(crate)` internals in `tuwunel_service` | Blocked on missing public API | Contribute missing `pub` accessors upstream, or use the admin command service layer as intermediary |
 
 ---
 
@@ -503,8 +582,8 @@ side-by-side with a Synapse instance.
    handler (text-based). It needs to be extracted into a service function callable from
    HTTP. How coupled is it to the admin room command system?
 
-5. **Custom axum routes vs Ruma:** Should we use plain axum routes (simpler, recommended)
-   or define custom Ruma request/response types (more consistent with codebase)?
+5. ~~Custom axum routes vs Ruma~~ — **Resolved:** Plain axum routes, since the Synapse
+   admin API is not part of the Matrix spec and has no Ruma types.
 
 ---
 
