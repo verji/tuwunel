@@ -1,5 +1,6 @@
 mod auth;
 mod error;
+mod room;
 mod user;
 
 use std::sync::Arc;
@@ -25,6 +26,23 @@ pub fn routes(services: Arc<Services>) -> Router<()> {
 		.route(
 			"/_synapse/admin/v2/users/{user_id}/devices",
 			get(user::devices::get_devices),
+		)
+		// Room endpoints (v1)
+		.route(
+			"/_synapse/admin/v1/rooms",
+			get(room::list::list_rooms),
+		)
+		.route(
+			"/_synapse/admin/v1/rooms/{room_id}",
+			get(room::details::get_room_details),
+		)
+		.route(
+			"/_synapse/admin/v1/rooms/{room_id}/members",
+			get(room::members::get_room_members),
+		)
+		.route(
+			"/_synapse/admin/v1/rooms/{room_id}/state",
+			get(room::state::get_room_state),
 		)
 		.with_state(services)
 }
