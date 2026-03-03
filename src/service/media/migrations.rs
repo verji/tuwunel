@@ -44,6 +44,7 @@ pub(crate) async fn migrate_sha256_media(services: &Services) -> Result {
 	for (old_path, path) in changes {
 		if old_path.exists() {
 			tokio::fs::rename(&old_path, &path).await?;
+			#[cfg(unix)]
 			if config.media_compat_file_link {
 				tokio::fs::symlink(&path, &old_path).await?;
 			}
@@ -129,6 +130,7 @@ async fn handle_media_check(
 		mediaid_user.remove(key);
 	}
 
+	#[cfg(unix)]
 	if config.media_compat_file_link && !old_exists && new_exists {
 		debug_warn!(
 			media_id = ?encode_key(key), ?new_path, ?old_path,
@@ -138,6 +140,7 @@ async fn handle_media_check(
 		tokio::fs::symlink(&new_path, &old_path).await?;
 	}
 
+	#[cfg(unix)]
 	if config.media_compat_file_link && !new_exists && old_exists {
 		debug_warn!(
 			media_id = ?encode_key(key), ?new_path, ?old_path,

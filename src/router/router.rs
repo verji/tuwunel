@@ -10,10 +10,15 @@ use tuwunel_service::Services;
 pub(crate) fn build(services: &Arc<Services>) -> (Router, Guard) {
 	let router = Router::<state::State>::new();
 	let (state, guard) = state::create(services.clone());
-	let router = tuwunel_api::router::build(router, &services.server)
+	let mut router = tuwunel_api::router::build(router, &services.server)
 		.route("/", get(it_works))
 		.fallback(not_found)
 		.with_state(state);
+
+	#[cfg(feature = "synapse_admin")]
+	{
+		router = router.merge(tuwunel_synapse_admin::routes(services.clone()));
+	}
 
 	(router, guard)
 }

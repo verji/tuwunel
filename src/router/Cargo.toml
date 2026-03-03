@@ -95,6 +95,9 @@ sentry_telemetry = [
 systemd = [
 	"dep:sd-notify",
 ]
+synapse_admin = [
+	"dep:tuwunel-synapse-admin",
+]
 zstd_compression = [
 	"tuwunel-api/zstd_compression",
 	"tuwunel-core/zstd_compression",
@@ -134,6 +137,8 @@ tuwunel-admin.workspace = true
 tuwunel-api.workspace = true
 tuwunel-core.workspace = true
 tuwunel-service.workspace = true
+tuwunel-synapse-admin.workspace = true
+tuwunel-synapse-admin.optional = true
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
 sd-notify.workspace = true

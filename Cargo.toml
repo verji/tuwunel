@@ -637,6 +637,11 @@ package = "tuwunel_macros"
 path = "src/macros"
 default-features = false
 
+[workspace.dependencies.tuwunel-synapse-admin]
+package = "tuwunel_synapse_admin"
+path = "src/synapse_admin"
+default-features = false
+
 ###############################################################################
 #
 # Release profiles

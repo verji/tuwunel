@@ -5400,6 +5400,7 @@ dependencies = [
  "tuwunel_api",
  "tuwunel_core",
  "tuwunel_service",
+ "tuwunel_synapse_admin",
 ]
 
 [[package]]
@@ -5440,6 +5441,22 @@ dependencies = [
  "url",
  "webpage",
  "webpki-root-certs",
+]
+
+[[package]]
+name = "tuwunel_synapse_admin"
+version = "1.5.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "futures",
+ "http",
+ "ruma",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tuwunel_core",
+ "tuwunel_service",
 ]
 
 [[package]]
